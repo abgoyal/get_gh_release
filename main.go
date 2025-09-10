@@ -6,7 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+
 	"net/http"
 	"os"
 	"runtime"
@@ -31,7 +31,6 @@ type releaseCandidate struct {
 }
 
 func main() {
-	log.SetFlags(0)
 
 	// 1. Argument and Flag Parsing
 	tokenFlag := flag.String("token", "", "GitHub personal access token.")
@@ -45,7 +44,7 @@ func main() {
 	// 2. Token Acquisition
 	token := getToken(*tokenFlag)
 	if token == "" {
-		log.Println("GitHub token not found. Please provide one via -token flag or GH_TOKEN env var.")
+		fmt.Println("GitHub token not found. Provide one via -token flag or GH_TOKEN env var.")
 		return
 	}
 
@@ -53,7 +52,8 @@ func main() {
 	platformArch := runtime.GOARCH
 	platformOS := runtime.GOOS
 	if platformOS != "linux" || (platformArch != "amd64" && platformArch != "arm64") {
-		log.Fatalf("This program is designed to run only on linux/amd64 or linux/arm64. Detected: %s/%s", platformOS, platformArch)
+		fmt.Fprintf(os.Stderr, "This program is designed to run only on linux/amd64 or linux/arm64. Detected: %s/%s\n", platformOS, platformArch)
+		os.Exit(1)
 	}
 
 	// 4. GitHub Client Initialization
@@ -71,20 +71,22 @@ func main() {
 	// 5. Find Release Candidates
 	candidates, err := findReleaseCandidates(ctx, client, repoPattern, platformOS, platformArch)
 	if err != nil {
-		log.Fatalf("Error finding releases: %v", err)
+		fmt.Fprintf(os.Stderr, "Error finding releases: %v\n", err)
+		os.Exit(1)
 	}
 
 	// 6. Action based on number of candidates
 	switch len(candidates) {
 	case 0:
-		log.Println("No matching release artifacts found for your platform.")
+		fmt.Println("No matching release artifacts found for your platform.")
 	case 1:
 		c := candidates[0]
-		log.Printf("Found one matching artifact: %s in repo %s/%s. Downloading...", c.AssetName, c.RepoOwner, c.RepoName)
+		fmt.Printf("%s/%s: %s\n", c.RepoOwner, c.RepoName, c.AssetName)
 		if err := downloadAndPrepare(ctx, client, insecureClient, c); err != nil {
-			log.Fatalf("Failed to download and prepare artifact: %v", err)
+			fmt.Println("failed")
+			fmt.Fprintf(os.Stderr, "Error downloading and preparing artifact: %v\n", err)
+			os.Exit(1)
 		}
-		log.Printf("Success! Artifact '%s' is downloaded and executable.", c.AssetName)
 	default:
 
 		for _, c := range candidates {
@@ -183,12 +185,14 @@ func downloadAndPrepare(ctx context.Context, client *github.Client, httpClient *
 	if err != nil {
 		return fmt.Errorf("could not write to file: %w", err)
 	}
+	fmt.Println("downloaded")
 
 	// 4. Make the file executable (chmod +x)
 	// 0755 is rwxr-xr-x
 	if err := os.Chmod(c.AssetName, 0755); err != nil {
 		return fmt.Errorf("could not make file executable: %w", err)
 	}
+	fmt.Println("made executable")
 
 	return nil
 }
