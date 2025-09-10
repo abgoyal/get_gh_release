@@ -39,6 +39,11 @@ func main() {
 		repoPattern = strings.ToLower(flag.Args()[0])
 	}
 
+	versionPattern := ""
+	if len(flag.Args()) > 1 {
+		versionPattern = strings.ToLower(flag.Args()[1])
+	}
+
 	// 2. Token Acquisition
 	token := getToken(*tokenFlag)
 	if token == "" {
@@ -67,7 +72,7 @@ func main() {
 
 	// 5. Find Release Candidates
 
-	candidates, err := findReleaseCandidates(ctx, client, repoPattern, platformOS, platformArch)
+	candidates, err := findReleaseCandidates(ctx, client, repoPattern, versionPattern, platformOS, platformArch)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error finding releases: %v\n", err)
 		os.Exit(1)
@@ -108,7 +113,7 @@ func getToken(tokenFlag string) string {
 }
 
 // findReleaseCandidates searches through repositories to find matching release assets.
-func findReleaseCandidates(ctx context.Context, client *github.Client, pattern, os, arch string) ([]releaseCandidate, error) {
+func findReleaseCandidates(ctx context.Context, client *github.Client, pattern, versionPattern, os, arch string) ([]releaseCandidate, error) {
 	var candidates []releaseCandidate
 	opts := &github.RepositoryListOptions{
 		Visibility:  "private",
@@ -130,11 +135,31 @@ func findReleaseCandidates(ctx context.Context, client *github.Client, pattern, 
 				continue
 			}
 
-			// Get the latest release for the repository
-			release, _, err := client.Repositories.GetLatestRelease(ctx, repoOwner, repoName)
-			if err != nil {
-				// This often returns 404 if no releases exist. We can safely ignore it.
-				continue
+			// Get the release for the repository
+			var release *github.RepositoryRelease
+			if versionPattern == "" {
+				// If no version pattern is provided, get the latest release
+				var err error
+				release, _, err = client.Repositories.GetLatestRelease(ctx, repoOwner, repoName)
+				if err != nil {
+					// This often returns 404 if no releases exist. We can safely ignore it.
+					continue
+				}
+			} else {
+				// If a version pattern is provided, find the matching release
+				releases, _, err := client.Repositories.ListReleases(ctx, repoOwner, repoName, nil)
+				if err != nil {
+					continue
+				}
+				for _, r := range releases {
+					if strings.Contains(strings.ToLower(r.GetTagName()), versionPattern) {
+						release = r
+						break
+					}
+				}
+				if release == nil {
+					continue
+				}
 			}
 
 			// Find a matching asset in the release
