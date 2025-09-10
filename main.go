@@ -2,11 +2,9 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
-
 	"net/http"
 	"os"
 	"runtime"
@@ -58,17 +56,17 @@ func main() {
 
 	// 4. GitHub Client Initialization
 	ctx := context.Background()
-	// InsecureSkipVerify is added for cases where corporate proxies might intercept TLS.
-	// In a secure environment, you might remove this.
-	insecureClient := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
-	ctx = context.WithValue(ctx, oauth2.HTTPClient, insecureClient)
-	client := github.NewClient(nil).WithAuthToken(token)
+	// Create a new token source
+	ts := oauth2.StaticTokenSource(
+		&oauth2.Token{AccessToken: token},
+	)
+	// Create a new HTTP client with the token source
+	tc := oauth2.NewClient(ctx, ts)
+	// Create a new GitHub client
+	client := github.NewClient(tc)
 
 	// 5. Find Release Candidates
+
 	candidates, err := findReleaseCandidates(ctx, client, repoPattern, platformOS, platformArch)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error finding releases: %v\n", err)
@@ -82,7 +80,7 @@ func main() {
 	case 1:
 		c := candidates[0]
 		fmt.Printf("%s/%s: %s\n", c.RepoOwner, c.RepoName, c.AssetName)
-		if err := downloadAndPrepare(ctx, client, insecureClient, c); err != nil {
+		if err := downloadAndPrepare(ctx, client, tc, c); err != nil {
 			fmt.Println("failed")
 			fmt.Fprintf(os.Stderr, "Error downloading and preparing artifact: %v\n", err)
 			os.Exit(1)
