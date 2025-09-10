@@ -32,6 +32,7 @@ func main() {
 
 	// 1. Argument and Flag Parsing
 	tokenFlag := flag.String("token", "", "GitHub personal access token.")
+	publicFlag := flag.Bool("public", false, "Search public repositories.")
 	flag.Parse()
 
 	repoPattern := ""
@@ -72,7 +73,7 @@ func main() {
 
 	// 5. Find Release Candidates
 
-	candidates, err := findReleaseCandidates(ctx, client, repoPattern, versionPattern, platformOS, platformArch)
+	candidates, err := findReleaseCandidates(ctx, client, repoPattern, versionPattern, platformOS, platformArch, *publicFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error finding releases: %v\n", err)
 		os.Exit(1)
@@ -113,77 +114,100 @@ func getToken(tokenFlag string) string {
 }
 
 // findReleaseCandidates searches through repositories to find matching release assets.
-func findReleaseCandidates(ctx context.Context, client *github.Client, pattern, versionPattern, os, arch string) ([]releaseCandidate, error) {
+func findReleaseCandidates(ctx context.Context, client *github.Client, pattern, versionPattern, os, arch string, public bool) ([]releaseCandidate, error) {
 	var candidates []releaseCandidate
-	opts := &github.RepositoryListOptions{
-		Visibility:  "private",
-		ListOptions: github.ListOptions{PerPage: 100},
-	}
+	var repos []*github.Repository
 
-	for {
-		repos, resp, err := client.Repositories.List(ctx, "", opts)
+	if public {
+		user, _, err := client.Users.Get(ctx, "")
 		if err != nil {
 			return nil, err
 		}
+		opts := &github.RepositoryListByUserOptions{
+			ListOptions: github.ListOptions{PerPage: 100},
+		}
+		for {
+			r, resp, err := client.Repositories.ListByUser(ctx, user.GetLogin(), opts)
+			if err != nil {
+				return nil, err
+			}
+			repos = append(repos, r...)
+			if resp.NextPage == 0 {
+				break
+			}
+			opts.Page = resp.NextPage
+		}
+	} else {
+		opts := &github.RepositoryListOptions{
+			Visibility:  "private",
+			ListOptions: github.ListOptions{PerPage: 100},
+		}
+		for {
+			r, resp, err := client.Repositories.List(ctx, "", opts)
+			if err != nil {
+				return nil, err
+			}
+			repos = append(repos, r...)
+			if resp.NextPage == 0 {
+				break
+			}
+			opts.Page = resp.NextPage
+		}
+	}
 
-		for _, repo := range repos {
-			repoName := repo.GetName()
-			repoOwner := repo.GetOwner().GetLogin()
+	for _, repo := range repos {
+		repoName := repo.GetName()
+		repoOwner := repo.GetOwner().GetLogin()
 
-			// Filter by repository name pattern if provided
-			if pattern != "" && !strings.Contains(strings.ToLower(repoName), pattern) {
+		// Filter by repository name pattern if provided
+		if pattern != "" && !strings.Contains(strings.ToLower(repoName), pattern) {
+			continue
+		}
+
+		// Get the release for the repository
+		var release *github.RepositoryRelease
+		if versionPattern == "" {
+			// If no version pattern is provided, get the latest release
+			var err error
+			release, _, err = client.Repositories.GetLatestRelease(ctx, repoOwner, repoName)
+			if err != nil {
+				// This often returns 404 if no releases exist. We can safely ignore it.
 				continue
 			}
-
-			// Get the release for the repository
-			var release *github.RepositoryRelease
-			if versionPattern == "" {
-				// If no version pattern is provided, get the latest release
-				var err error
-				release, _, err = client.Repositories.GetLatestRelease(ctx, repoOwner, repoName)
-				if err != nil {
-					// This often returns 404 if no releases exist. We can safely ignore it.
-					continue
-				}
-			} else {
-				// If a version pattern is provided, find the matching release
-				releases, _, err := client.Repositories.ListReleases(ctx, repoOwner, repoName, nil)
-				if err != nil {
-					continue
-				}
-				for _, r := range releases {
-					if strings.Contains(strings.ToLower(r.GetTagName()), versionPattern) {
-						release = r
-						break
-					}
-				}
-				if release == nil {
-					continue
+		} else {
+			// If a version pattern is provided, find the matching release
+			releases, _, err := client.Repositories.ListReleases(ctx, repoOwner, repoName, nil)
+			if err != nil {
+				continue
+			}
+			for _, r := range releases {
+				if strings.Contains(strings.ToLower(r.GetTagName()), versionPattern) {
+					release = r
+					break
 				}
 			}
-
-			// Find a matching asset in the release
-			for _, asset := range release.Assets {
-				assetName := strings.ToLower(asset.GetName())
-				if strings.Contains(assetName, os) && strings.Contains(assetName, arch) {
-
-					candidates = append(candidates, releaseCandidate{
-						RepoOwner:   repoOwner,
-						RepoName:    repoName,
-						AssetName:   asset.GetName(),
-						DownloadURL: asset.GetBrowserDownloadURL(),
-						AssetID:     asset.GetID(),
-					})
-					break // Found a match for this repo, move to the next one
-				}
+			if release == nil {
+				continue
 			}
 		}
 
-		if resp.NextPage == 0 {
-			break
+		// Find a matching asset in the release
+		for _, asset := range release.Assets {
+			assetName := strings.ToLower(asset.GetName())
+			if strings.Contains(assetName, os) && strings.Contains(assetName, arch) {
+
+				candidates = append(candidates, releaseCandidate{
+					RepoOwner:   repoOwner,
+					RepoName:    repoName,
+					AssetName:   asset.GetName(),
+					DownloadURL: asset.GetBrowserDownloadURL(),
+					AssetID:     asset.GetID(),
+				})
+				break // Found a match for this repo, move to the next one
+			}
 		}
-		opts.Page = resp.NextPage
 	}
+
 	return candidates, nil
 }
 
